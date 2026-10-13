@@ -74,7 +74,7 @@ def main():
             project="magmax",
             group="merging-CIL-target",
             entity=args.wandb_entity_name,
-            mode="online",
+            mode=os.environ.get("WANDB_MODE", "online"),
             name=f"{name}-{args.taskseq_pattern}-{args.merge_fn}_lambda{args.coeff}_{suffix}_seed{args.seed}",
             tags=["merging-target", "CIL", f"{args.dataset}", f"{method}"],
             config=args,

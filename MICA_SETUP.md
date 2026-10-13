@@ -4,8 +4,10 @@ Source chính thức: https://github.com/KeiHiroshima/tunable-magmax
 Commit upstream khi clone: `c8bddf3a07dd6f3b5dfb9ed617665ecefb77c758`.
 Repo cá nhân: https://github.com/lmd-2510/tunable-MagMax
 
-Giữ nguyên code training, merging, scripts và configs của tác giả. Chỉ thêm
+Giữ nguyên code training và thuật toán merging của tác giả. Setup thêm
 `requirements.txt`, `scripts/setup_mica.sh` và hướng dẫn này để chuẩn bị `ai_env`.
+Launcher đã chốt được mô tả trong `RUN_MICA.md`; code merge nhận WANDB_MODE
+để tắt logging online khi chạy trên MICA.
 Setup không chọn config thực nghiệm và không train/download dữ liệu hay pretrained weights.
 
 ## Trên terminal SSH MICA
@@ -58,10 +60,10 @@ tiến trình sau `CUDA_VISIBLE_DEVICES`; CLI `--gpu_id` của training/merging 
 
 ## Sau setup
 
-Chốt dataset, số task, task sequence A/B/C, seed, similarity metric, target configuration,
-số target samples và số train samples/task trước khi viết launcher check/start/status/follow.
-Các script upstream hiện có mặc định CIFAR100/5, patternA, seed3; chúng chưa phải config
-đã chốt cho run của bạn. Không chạy `scripts/finetune_merge.sh` cho đến khi đối chiếu config.
+Đã chốt CIFAR100/20, pattern A, seed 5, Label + MagMax trên 25 target variants.
+Dùng `scripts/run_tunable_mica.sh` theo `RUN_MICA.md`.
+Các script upstream giữ nguyên mặc định CIFAR100/5, patternA, seed3; không dùng
+chúng trực tiếp cho cấu hình đã chốt.
 
 Source gốc vẫn có `environment.yml` nếu cần tái tạo môi trường theo export tác giả.
 Chưa thực hiện cài `ai_env`, GPU preflight hoặc training trên MICA từ máy Windows.

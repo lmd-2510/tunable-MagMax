@@ -79,7 +79,7 @@ out.mkdir(parents=True, exist_ok=True)
 (out / 'environment.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
 print('[ENV]', json.dumps(report, indent=2))
 print(f'[GPU] free={free/2**30:.2f}/{total/2**30:.2f} GiB')
-print('[OK] Imports/CUDA passed. No experiment has been launched; choose the config next.')
+print('[OK] Imports/CUDA passed. This check does not launch training or merging.')
 PY
     ;;
   *) echo 'Usage: bash scripts/setup_mica.sh {install|check}' >&2; exit 2 ;;

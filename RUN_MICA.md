@@ -44,10 +44,21 @@ bash scripts/run_tunable_mica.sh follow
 ```
 
 Không cần pip install lại nếu setup check trước đó đã thành công. Dataset và
-pretrained cache dùng chung với MagMax; đợi download CIFAR100 của MagMax hoàn
-tất. `start` từ chối chạy khi chưa có file train/test đã giải nén; torchvision
-vẫn kiểm tra integrity lúc load. Không dùng chung task checkpoints hoặc zeroshot
-checkpoint: Tunable train riêng và lưu dưới repo này.
+pretrained cache dùng chung với MagMax. `start` chạy nền ngay cả khi chưa có
+dataset: chuẩn bị dataset xong thì tự chuyển sang train, merge/evaluate và tổng
+hợp kết quả. Không cần ngồi đợi tải xong để nhập lệnh train.
+
+Nếu job MagMax đang chạy và dataset dùng chung chưa hoàn chỉnh, launcher chờ
+job đó tải/giải nén, không ghi đè archive đang được sử dụng. Nếu không có job đó,
+launcher tự tải từ nguồn CIFAR chính thức. Dùng curl để thử resume archive tải
+dở; nếu server không hỗ trợ resume hoặc checksum sai thì tải bản mới. Kiểm tra
+MD5 trước giải nén và kiểm tra torchvision trước training. Dataset đã có đủ và
+đúng checksum sẽ được tái sử dụng. Khóa dataset ngăn các launcher này tải trùng.
+
+Nếu đang chạy lệnh Python/curl download thủ công ở terminal khác, dừng lệnh đó
+trước `start`; quá trình thủ công không dùng khóa của launcher.
+Download dùng CPU, không train cùng lúc với một dataset chưa hoàn chỉnh.
+Không dùng chung task checkpoints hoặc zeroshot: Tunable train riêng dưới repo này.
 
 Cache mặc định là `../MagMax/checkpoints/ViT-B-16/cachedir/open_clip`.
 Nếu MagMax tải cache ở đường dẫn khác, export TUNABLE_OPENCLIP_CACHE trước start.
@@ -75,12 +86,15 @@ Output: `outs/tunable_CIFAR100_20_A_seed5/`.
   metric chính. Ghi rõ một seed, không báo std qua seeds.
 - `results/`: 50 JSON gốc (25 Label + 25 MagMax), chứa accuracy theo task,
   macro/overall accuracy, preference và thông tin target sampling.
-- `train.log`, `label.log`, `magmax.log`, `nohup.log`: log từng giai đoạn.
+- `download.log`, `train.log`, `label.log`, `magmax.log`, `nohup.log`: log từng giai đoạn.
+- `stage.txt`: dataset → train → label → magmax → summary → done.
 - `runtime.json`, `environment.txt`, `source_commit.txt`, `commands.txt`,
   `target_config.json`, `gpu.txt`, `data_dir.txt`: thông tin tái lập.
 - `exit_code.txt`: 0 nghĩa là toàn bộ pipeline và tổng hợp kết quả thành công.
 
-`start` không ghi đè một lần chạy đã có exit code. Nếu đủ 20 task checkpoints
+`start` cho phép thử lại nếu chỉ bước dataset lỗi và chưa có task checkpoint;
+giữ lại exit code cũ và append log. Các lần chạy đã bắt đầu training vẫn được
+bảo vệ như trước. Nếu đủ 20 task checkpoints
 và merge/evaluation bị gián đoạn, chạy lại chỉ phần merge:
 
 ```bash

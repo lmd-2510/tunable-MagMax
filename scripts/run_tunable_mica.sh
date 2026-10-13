@@ -50,13 +50,76 @@ check_environment() {
   if [[ -s "$MAGMAX_DATA_DIR/cifar-100-python/train" && -s "$MAGMAX_DATA_DIR/cifar-100-python/test" ]]; then
     echo '[DATA] CIFAR100 files present; torchvision verifies integrity at load.'
   else
-    echo '[DATA] Not ready. Wait for the MagMax dataset download to finish before start.'
+    echo '[DATA] Not ready. start will prepare the dataset in the background before training.'
   fi
   df -h "$ROOT"
   free -h
 }
-require_data() {
-  [[ -s "$MAGMAX_DATA_DIR/cifar-100-python/train" && -s "$MAGMAX_DATA_DIR/cifar-100-python/test" ]] || die 'CIFAR100 not ready at MAGMAX_DATA_DIR. Wait for its download; no second download is launched.'
+checksum_ok() {
+  [[ -s "$1" ]] && printf '%s  %s\n' "$2" "$1" | md5sum --status -c -
+}
+cifar_data_ready() {
+  checksum_ok "$MAGMAX_DATA_DIR/cifar-100-python/train" 16019d7e3df5f24257cddd939b257f8d &&
+  checksum_ok "$MAGMAX_DATA_DIR/cifar-100-python/test" f0ef6b0ae62326f3e7ffdfab6717acfc &&
+  checksum_ok "$MAGMAX_DATA_DIR/cifar-100-python/meta" 7973b15100ade9c7d40fb424638fde48
+}
+magmax_job_active() {
+  local other_out="$(dirname "$ROOT")/MagMax/outs/magmax_CIFAR100_20_seed5" pid
+  # The original MagMax launcher does not use the dataset lock. Avoid writing
+  # its dataset while that job is downloading/extracting into the shared root.
+  [[ "$MAGMAX_DATA_DIR" -ef "$(dirname "$ROOT")/MagMax/datasets" ]] || return 1
+  [[ -s "$other_out/job.pid" && ! -e "$other_out/exit_code.txt" ]] || return 1
+  pid="$(<"$other_out/job.pid")"
+  [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
+}
+prepare_data() {
+  local archive="$MAGMAX_DATA_DIR/cifar-100-python.tar.gz"
+  local digest=eb9058c3a382ffc7106e4002c42a8d85
+  local url=https://www.cs.toronto.edu/~kriz/cifar-100-python.tar.gz
+  mkdir -p "$MAGMAX_DATA_DIR"
+  command -v md5sum >/dev/null || die 'md5sum is required for dataset integrity checks.'
+  exec 8> "$MAGMAX_DATA_DIR/.cifar100.download.lock"
+  echo '[DATA] Acquiring dataset lock.'
+  flock 8
+  while ! cifar_data_ready && magmax_job_active; do
+    echo '[DATA] Waiting for the existing MagMax download/extraction. Training starts automatically when ready.'
+    sleep 30
+  done
+  if ! cifar_data_ready; then
+    if command -v curl >/dev/null; then
+      if ! checksum_ok "$archive" "$digest"; then
+        echo '[DATA] Downloading official CIFAR100; attempting to resume the existing archive.'
+        if ! curl -fL --connect-timeout 30 --retry 5 --retry-delay 5 -C - -o "$archive" "$url" || ! checksum_ok "$archive" "$digest"; then
+          # Preserve the old partial/corrupt archive if Range is unsupported.
+          archive="$MAGMAX_DATA_DIR/cifar-100-python.tunable-fresh.tar.gz"
+          echo '[DATA] Resume unavailable or checksum invalid; downloading a fresh copy.'
+          curl -fL --connect-timeout 30 --retry 5 --retry-delay 5 -o "$archive" "$url"
+        fi
+      fi
+      checksum_ok "$archive" "$digest" || die 'Downloaded archive failed CIFAR100 MD5 verification.'
+      echo '[DATA] Archive checksum passed. Extracting.'
+      tar -xzf "$archive" -C "$MAGMAX_DATA_DIR"
+    else
+      echo '[DATA] curl unavailable; torchvision will download/extract the dataset.'
+    fi
+  fi
+  # Final validation uses torchvision, exactly like upstream data loading.
+  # This stage uses CPU only and finishes before model training is launched.
+  env CUDA_VISIBLE_DEVICES='' "$PYTHON_BIN" - <<'PY'
+import os
+from torchvision.datasets import CIFAR100
+root = os.environ['MAGMAX_DATA_DIR']
+train = CIFAR100(root=root, train=True, download=True)
+test = CIFAR100(root=root, train=False, download=True)
+assert len(train) == 50000 and len(test) == 10000
+print(f'[DATA READY] Train={len(train)}, test={len(test)}; root={root}', flush=True)
+PY
+  flock -u 8
+  exec 8>&-
+}
+set_stage() {
+  printf '%s\n' "$1" > "$OUT/stage.txt"
+  echo "[STAGE] $1"
 }
 record_command() {
   printf '%q ' "$@" >> "$OUT/commands.txt"
@@ -73,7 +136,6 @@ run_job() {
   trap 'code=$?; printf "%s\n" "$code" > "$OUT/exit_code.txt"' EXIT
   check_environment
   check_training_state
-  require_data
   export CUDA_VISIBLE_DEVICES="$GPU_ID"
   "$PYTHON_BIN" -m pip freeze > "$OUT/environment.txt"
   cp outs/mica_setup/environment.json "$OUT/runtime.json"
@@ -83,18 +145,25 @@ run_job() {
   cp configs/target_data_config_main25.json "$OUT/target_config.json"
   : > "$OUT/commands.txt"
   local began=$SECONDS
+  set_stage dataset
+  prepare_data 2>&1 | tee -a "$OUT/download.log"
   if [[ "${TUNABLE_STAGE:-all}" == all ]]; then
+    set_stage train
     record_command "$PYTHON_BIN" -u finetune_splitted.py "${ARGS[@]}"
     "$PYTHON_BIN" -u finetune_splitted.py "${ARGS[@]}" 2>&1 | tee -a "$OUT/train.log"
   fi
   [[ "$(checkpoint_count)" == 20 ]] || die 'Training did not produce all 20 task checkpoints.'
   # Labels use the labelled meta subset. Both methods evaluate identical targets.
+  set_stage label
   record_command "$PYTHON_BIN" -u merge_for_targetdata.py "${ARGS[@]}" "${MERGE_ARGS[@]}" --merge_fn masked_magmax_with_targetdata
   "$PYTHON_BIN" -u merge_for_targetdata.py "${ARGS[@]}" "${MERGE_ARGS[@]}" --merge_fn masked_magmax_with_targetdata 2>&1 | tee -a "$OUT/label.log"
+  set_stage magmax
   record_command "$PYTHON_BIN" -u merge_for_targetdata.py "${ARGS[@]}" "${MERGE_ARGS[@]}" --merge_fn magmax
   "$PYTHON_BIN" -u merge_for_targetdata.py "${ARGS[@]}" "${MERGE_ARGS[@]}" --merge_fn magmax 2>&1 | tee -a "$OUT/magmax.log"
+  set_stage summary
   "$PYTHON_BIN" scripts/summarize_mica.py --run-dir "$OUT"
   printf '%s\n' "$((SECONDS - began))" > "$OUT/total_seconds.txt"
+  set_stage done
   echo "[DONE] $OUT/summary.csv and summary.json"
 }
 
@@ -108,13 +177,18 @@ case "$ACTION" in
     flock -n 9 || die 'A Tunable job is already active.'
     check_environment
     check_training_state
-    require_data
     STAGE=all
     if [[ "$ACTION" == merge ]]; then
       [[ "$(checkpoint_count)" == 20 ]] || die 'merge requires all 20 completed checkpoints.'
       STAGE=merge
     else
-      [[ ! -e "$OUT/exit_code.txt" ]] || die "Previous launch exists: inspect status; use 'merge' if training completed."
+      if [[ -e "$OUT/exit_code.txt" ]]; then
+        if [[ "$(checkpoint_count)" == 0 && -s "$OUT/stage.txt" && "$(<"$OUT/stage.txt")" == dataset && "$(<"$OUT/exit_code.txt")" != 0 ]]; then
+          echo '[DATA] Retrying a failed preparation stage; no task training has started.'
+        else
+          die "Previous launch exists: inspect status; use 'merge' if training completed."
+        fi
+      fi
     fi
     # Clear a previous merge failure only after preflight succeeds; log is appended.
     if [[ -e "$OUT/exit_code.txt" ]]; then
@@ -136,6 +210,7 @@ case "$ACTION" in
       echo '[IDLE/STOPPED] No active job confirmed.'
     fi
     echo "[CHECKPOINTS] $(checkpoint_count)/20"
+    [[ ! -s "$OUT/stage.txt" ]] || echo "[STAGE] $(<"$OUT/stage.txt")"
     [[ ! -f "$OUT/nohup.log" ]] || tail -n 25 "$OUT/nohup.log"
     ;;
   follow) [[ -f "$OUT/nohup.log" ]] || die 'No log yet; run start first.'; tail -f "$OUT/nohup.log" ;;

@@ -108,5 +108,29 @@ launcher dừng vì upstream không lưu RNG/optimizer để resume chính xác.
 Giữ lại thư mục checkpoint và log để xem nguyên nhân trước khi chọn chạy lại.
 Launcher không tự xóa hoặc tự resume một chuỗi train dang dở.
 
+### Giữ kết quả có sẵn khi hai phương pháp chọn khác mẫu target
+
+Code upstream reset NumPy nhưng chọn task bằng Python random, không reseed theo
+target variant. Merging có thể tiêu thụ Python RNG, nên hai phương pháp có cùng
+seed/config nhưng chọn khác task ở một số target. Mặc định helper dừng để tránh
+coi các kết quả đó là so sánh trên dữ liệu giống nhau.
+
+Nếu training/merge/evaluation đã hoàn tất và bạn chọn giữ kết quả hiện có:
+
+```bash
+python scripts/summarize_mica.py \
+  --run-dir outs/tunable_CIFAR100_20_A_seed5 \
+  --allow-unpaired-targets
+```
+
+Chỉ đọc các JSON đã có và ghi summary.csv/summary.json; không gọi GPU, train,
+merge hoặc evaluation. Vẫn kiểm tra đủ 50 JSON, model, lambda, target seeds,
+phân phối và tổng 500 mẫu/target. Xuất cảnh báo, cột target_sampling=unpaired,
+paired_targets=false và toàn bộ metadata khác nhau trong sampling_differences.
+Ghi rõ kết quả là trung bình trên các mẫu target riêng của từng phương pháp;
+không trình bày chênh lệch accuracy như so sánh trên cùng dữ liệu target.
+Exit code 1 của job trước vẫn được giữ vì job đó dừng tại kiểm tra summary;
+việc xuất summary riêng không sửa lại lịch sử job. Không cần chạy lại merge.
+
 Nguồn: https://arxiv.org/html/2605.20803v3 và
 https://github.com/KeiHiroshima/tunable-magmax
